@@ -1,6 +1,11 @@
+import { createServer } from "http";
 import app from "./app.js";
 import { env } from "./config/env.js";
 import pool, { initDb } from "./config/db.js";
+import { initSocket } from "./services/socketService.js";
+
+const httpServer = createServer(app);
+const io = initSocket(httpServer);
 
 const startServer = async () => {
     try {
@@ -10,7 +15,7 @@ const startServer = async () => {
         // Initialize Tables
         await initDb();
 
-        app.listen(env.PORT, () => {
+        httpServer.listen(env.PORT, () => {
             console.log(`🚀 Server running on port ${env.PORT}`);
         });
     } catch (error) {

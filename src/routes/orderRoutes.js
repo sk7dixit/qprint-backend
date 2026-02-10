@@ -17,7 +17,7 @@ router.post("/create", authenticate, requireProfileComplete, createOrder);
 router.get("/my", authenticate, requireProfileComplete, getMyOrders);
 
 // Shopkeeper/Admin routes
-router.get("/shop", authenticate, requireProfileComplete, allowRoles("shopkeeper", "admin"), getShopOrders);
-router.patch("/:id/status", authenticate, requireProfileComplete, allowRoles("shopkeeper", "admin"), updateOrderStatus);
+router.get("/shop", authenticate, requireProfileComplete, allowRoles("seller", "admin"), getShopOrders);
+router.patch("/:id/status", authenticate, requireProfileComplete, allowRoles("seller", "admin"), updateOrderStatus);
 
 export default router;

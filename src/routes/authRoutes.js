@@ -57,8 +57,7 @@ router.post("/google", async (req, res) => {
 
         res.json({
             success: true,
-            profile_complete: user.profile_complete,
-            role: user.role
+            user  // Return the full user object
         });
     } catch (err) {
         console.error("Auth Error:", err);

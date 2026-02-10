@@ -1,7 +1,5 @@
-/**
- * Order Controller - Handles print orders and queue logic
- */
 import pool from "../config/db.js";
+import { emitToShop, emitToUser } from "../services/socketService.js";
 
 export const createOrder = async (req, res) => {
     const { shop_id, file_id } = req.body;
@@ -27,6 +25,9 @@ export const createOrder = async (req, res) => {
             RETURNING *;
         `;
         const orderResult = await pool.query(insertQuery, [req.user.id, shop_id, file_id, queueNumber]);
+
+        // Real-time: Notify shop
+        emitToShop(shop_id, "orderCreated", orderResult.rows[0]);
 
         res.status(201).json({
             success: true,
@@ -111,7 +112,15 @@ export const updateOrderStatus = async (req, res) => {
             return res.status(404).json({ error: "Order not found" });
         }
 
-        res.status(200).json({ success: true, order: result.rows[0] });
+        const updatedOrder = result.rows[0];
+
+        // Real-time: Notify student
+        emitToUser(updatedOrder.user_id, "statusUpdated", updatedOrder);
+
+        // Real-time: Notify shop (to sync across tabs/devices)
+        emitToShop(updatedOrder.shop_id, "statusUpdated", updatedOrder);
+
+        res.status(200).json({ success: true, order: updatedOrder });
     } catch (error) {
         console.error("Update status error:", error);
         res.status(500).json({ error: "Internal server error" });

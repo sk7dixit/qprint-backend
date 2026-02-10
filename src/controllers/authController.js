@@ -30,21 +30,37 @@ export const completeProfile = async (req, res) => {
     }
 
     try {
+        const { enrollmentId, mobile } = req.body;
+
+        if (!enrollmentId || !mobile) {
+            return res.status(400).json({ error: "Missing enrollmentId or mobile" });
+        }
+
+        // Server-side validation for ID length logic
+        if (enrollmentId.length !== 5 && enrollmentId.length < 10) {
+            return res.status(400).json({ error: "Invalid ID format. Must be 5 digits (Staff) or 10+ digits (Student)." });
+        }
+
+        // Determine role based on ID length
+        let newRole = req.user.role;
+        if (enrollmentId.length === 5) {
+            newRole = 'staff';
+        } else if (enrollmentId.length >= 10) {
+            newRole = 'student';
+        }
+
         const query = `
             UPDATE users
             SET
                 enrollment_id = $1,
                 mobile = $2,
                 profile_complete = true,
-                role = CASE 
-                    WHEN $1 ~* '^[0-9]+$' THEN 'student' 
-                    ELSE 'staff' 
-                END
-            WHERE id = $3
+                role = $3
+            WHERE id = $4
             RETURNING *;
         `;
 
-        const result = await pool.query(query, [enrollmentId, mobile, req.user.id]);
+        const result = await pool.query(query, [enrollmentId, mobile, newRole, req.user.id]);
         res.status(200).json({ success: true, user: result.rows[0] });
     } catch (error) {
         console.error("Error completing profile:", error);
