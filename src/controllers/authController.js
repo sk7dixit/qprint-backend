@@ -16,7 +16,7 @@ export const getProfile = async (req, res) => {
 };
 
 export const checkUser = async (req, res) => {
-    if (!req.user.profile_complete) {
+    if (!req.user.is_profile_complete) {
         return res.status(409).json({ next: "onboarding" });
     }
     res.status(200).json({ next: "dashboard" });
@@ -30,12 +30,6 @@ export const completeProfile = async (req, res) => {
     }
 
     try {
-        const { enrollmentId, mobile } = req.body;
-
-        if (!enrollmentId || !mobile) {
-            return res.status(400).json({ error: "Missing enrollmentId or mobile" });
-        }
-
         // Server-side validation for ID length logic
         if (enrollmentId.length !== 5 && enrollmentId.length < 10) {
             return res.status(400).json({ error: "Invalid ID format. Must be 5 digits (Staff) or 10+ digits (Student)." });
@@ -54,7 +48,7 @@ export const completeProfile = async (req, res) => {
             SET
                 enrollment_id = $1,
                 mobile = $2,
-                profile_complete = true,
+                is_profile_complete = true,
                 role = $3
             WHERE id = $4
             RETURNING *;

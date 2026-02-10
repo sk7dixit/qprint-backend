@@ -20,7 +20,7 @@ const seedSeller = async () => {
         } else {
             console.log("Creating new user...");
             await pool.query(
-                `INSERT INTO users (uid, email, name, role, profile_complete)
+                `INSERT INTO users (uid, email, name, role, is_profile_complete)
                  VALUES ($1, $2, $3, 'seller', true)`,
                 [tempUid, email, name]
             );

@@ -1,0 +1,1 @@
+This is a dummy file for testing the print draft upload system.

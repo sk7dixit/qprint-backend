@@ -59,7 +59,7 @@ async function bootstrap() {
             await db.query(`
                 UPDATE users 
                 SET role = 'admin', 
-                    profile_complete = true, 
+                    is_profile_complete = true, 
                     uid = $1  -- Ensure UID matches Firebase
                 WHERE id = $2
             `, [user.uid, existingUser.id]);
@@ -67,7 +67,7 @@ async function bootstrap() {
         } else {
             console.log("Step 3: Creating new admin record in database...");
             await db.query(
-                "INSERT INTO users (uid, email, name, role, profile_complete) VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO users (uid, email, name, role, is_profile_complete) VALUES ($1, $2, $3, $4, $5)",
                 [user.uid, adminEmail, "Master Admin", "admin", true]
             );
             console.log("✅ Database record created and promoted.");

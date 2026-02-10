@@ -10,8 +10,8 @@ async function harmonize() {
         // Rename university_id to enrollment_id if it exists
         await client.query("ALTER TABLE users RENAME COLUMN university_id TO enrollment_id").catch(e => console.log("university_id already renamed or missing."));
 
-        // Add profile_complete
-        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_complete BOOLEAN DEFAULT FALSE");
+        // Add is_profile_complete
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_profile_complete BOOLEAN DEFAULT FALSE");
 
         // Add shop_id (requires shops table first)
         await client.query(`

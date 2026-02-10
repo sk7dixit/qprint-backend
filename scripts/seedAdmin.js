@@ -37,10 +37,10 @@ const seedAdmin = async () => {
 
         // Upsert into PostgreSQL
         const result = await pool.query(
-            `INSERT INTO users (uid, email, mobile, name, role, profile_complete)
+            `INSERT INTO users (uid, email, mobile, name, role, is_profile_complete)
              VALUES ($1, $2, $3, $4, 'admin', true)
              ON CONFLICT (uid) 
-             DO UPDATE SET role = 'admin', profile_complete = true, mobile = $3
+             DO UPDATE SET role = 'admin', is_profile_complete = true, mobile = $3
              RETURNING *`,
             [firebaseUser.uid, adminEmail, adminMobile, "QPrint Admin"]
         );

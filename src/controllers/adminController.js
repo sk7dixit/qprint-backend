@@ -6,9 +6,9 @@ export const getDashboardStats = async (req, res) => {
         // 1. Core Metrics
         const userCount = await pool.query("SELECT COUNT(*) FROM users");
         const shopCount = await pool.query("SELECT COUNT(*) FROM shops");
-        const orderCount = await pool.query("SELECT COUNT(*) FROM orders WHERE status = 'completed'");
+        const jobCount = await pool.query("SELECT COUNT(*) FROM print_jobs WHERE status = 'completed'");
         const todayActivity = await pool.query(
-            "SELECT COUNT(*) FROM orders WHERE DATE(created_at) = CURRENT_DATE"
+            "SELECT COUNT(*) FROM print_jobs WHERE DATE(created_at) = CURRENT_DATE"
         );
 
         // 2. System Status (Shop Network)
@@ -19,12 +19,12 @@ export const getDashboardStats = async (req, res) => {
         const recentUsers = await pool.query(
             "SELECT 'user_signup' as type, name as msg, created_at as time, 'new' as status FROM users ORDER BY created_at DESC LIMIT 3"
         );
-        const recentOrders = await pool.query(
-            "SELECT 'payment_success' as type, 'Order #' || id as msg, created_at as time, 'success' as status FROM orders WHERE status IN ('completed', 'ready') ORDER BY created_at DESC LIMIT 3"
+        const recentJobs = await pool.query(
+            "SELECT 'payment_success' as type, 'Job #' || id as msg, created_at as time, 'success' as status FROM print_jobs WHERE status IN ('completed', 'ready') ORDER BY created_at DESC LIMIT 3"
         );
 
         // Merge and sort activities
-        const activities = [...recentUsers.rows, ...recentOrders.rows]
+        const activities = [...recentUsers.rows, ...recentJobs.rows]
             .sort((a, b) => new Date(b.time) - new Date(a.time))
             .slice(0, 5);
 
@@ -32,7 +32,7 @@ export const getDashboardStats = async (req, res) => {
             metrics: [
                 { label: "Total Users", val: userCount.rows[0].count, path: "/users" },
                 { label: "Total Shops", val: shopCount.rows[0].count, path: "/shops" },
-                { label: "Payments (TX)", val: orderCount.rows[0].count, path: "/payments" },
+                { label: "Payments (TX)", val: jobCount.rows[0].count, path: "/payments" },
                 { label: "Today's Activity", val: todayActivity.rows[0].count, path: "/dashboard" }
             ],
             systemStatus: [
@@ -81,11 +81,11 @@ export const getAllShops = async (req, res) => {
 export const getAllPayments = async (req, res) => {
     try {
         const query = `
-            SELECT o.*, u.name as user_name, u.enrollment_id, u.role as user_role, f.filename
-            FROM orders o
-            JOIN users u ON o.user_id = u.id
-            JOIN files f ON o.file_id = f.id
-            ORDER BY o.created_at DESC
+            SELECT pj.*, u.name as user_name, u.enrollment_id, u.role as user_role, d.original_file_name AS filename
+            FROM print_jobs pj
+            LEFT JOIN users u ON pj.user_id::text = u.id::text
+            LEFT JOIN print_job_drafts d ON pj.draft_id = d.id
+            ORDER BY pj.created_at DESC
         `;
         const result = await pool.query(query);
         res.status(200).json(result.rows);
@@ -168,7 +168,7 @@ export const createShop = async (req, res) => {
 
         // 5. Create User Record in local users table for profile mapping
         await pool.query(
-            `INSERT INTO users (uid, email, name, mobile, role, shop_id, profile_complete, force_password_reset)
+            `INSERT INTO users (uid, email, name, mobile, role, shop_id, is_profile_complete, force_password_reset)
              VALUES ($1, $2, $3, $4, 'seller', $5, true, true)
              ON CONFLICT (uid) DO UPDATE SET shop_id = $5, role = 'seller', force_password_reset = true`,
             [uid, email, ownerName, mobileNumber, shopId]
@@ -218,15 +218,15 @@ export const getShopById = async (req, res) => {
         const shop = result.rows[0];
 
         // Dynamic aggregation for the detail view
-        const orderStats = await pool.query(
-            "SELECT COUNT(*) as total, MAX(created_at) as last_order FROM orders WHERE shop_id = $1",
+        const jobStats = await pool.query(
+            "SELECT COUNT(*) as total, MAX(created_at) as last_job FROM print_jobs WHERE shop_id = $1",
             [id]
         );
 
         res.status(200).json({
             ...shop,
-            totalOrders: orderStats.rows[0].total || "0",
-            lastOrder: orderStats.rows[0].last_order ? new Date(orderStats.rows[0].last_order).toLocaleString() : "No orders yet",
+            totalJobs: jobStats.rows[0].total || "0",
+            lastJob: jobStats.rows[0].last_job ? new Date(jobStats.rows[0].last_job).toLocaleString() : "No jobs yet",
             lastLogin: "Recent", // This would ideally come from an audit log or sessions table
             status: shop.is_active ? "Active" : "Disabled"
         });
