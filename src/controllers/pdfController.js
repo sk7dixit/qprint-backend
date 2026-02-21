@@ -1,11 +1,10 @@
 
 import { PDFDocument, rgb } from 'pdf-lib';
 import pool from '../config/db.js';
-import { uploadToStorage, downloadFile } from '../services/storage.service.js';
+import { downloadFile } from '../services/storage.service.js';
 import { findTextCoordinates } from '../utils/pdfUtils.js';
 import { callAI } from '../services/aiService.js';
-import fs from 'fs';
-import path from 'path';
+
 
 /**
  * pdfController.js
@@ -53,115 +52,40 @@ export const processPDFInstructions = async (req, res) => {
             return res.status(500).json({ error: "Failed to retrieve source PDF." });
         }
 
-        // 3. Load the PDF
-        const pdfDoc = await PDFDocument.load(pdfBytes);
+        // 3. Process the PDF in-memory
+        const { applyPDFActions } = await import('../services/pdf.service.js');
+        const editedPdfBuffer = await applyPDFActions(pdfBytes, instructions);
 
-        // 4. Apply Instructions
-        for (const action of instructions) {
-            switch (action.type) {
-                case 'delete_page':
-                    // Note: pdf-lib uses 0-based indices
-                    // We need to be careful with indices shifting if we delete multiple.
-                    // Frontend usually sends them in reverse order, but let's assume valid indices.
-                    if (action.pageIndex >= 0 && action.pageIndex < pdfDoc.getPageCount()) {
-                        // Removing a page shifts indices. 
-                        // If we are processing a batch, checking index validity is tricky.
-                        // Simplification: Try/Catch per action or assume frontend sends sound instructions.
-                        try {
-                            pdfDoc.removePage(action.pageIndex);
-                        } catch (e) { console.warn("Page removal failed", e); }
-                    }
-                    break;
+        // 4. Upload result
+        // 4. Upload result
+        const { supabase } = await import('../config/supabase.js');
+        const timestamp = Date.now();
+        const newPath = `edits/${req.user.id}/${timestamp}-edited.pdf`;
 
-                case 'reorder_pages':
-                    // Not fully implemented in previous version, keeping placeholder or skipping
-                    break;
+        const { error: uploadError } = await supabase.storage
+            .from('uploads')
+            .upload(newPath, editedPdfBuffer, {
+                contentType: 'application/pdf',
+                upsert: false
+            });
 
-                case 'add_text':
-                    const pages = pdfDoc.getPages();
-                    const page = pages[action.pageIndex];
-                    if (page) {
-                        page.drawText(action.text, {
-                            x: action.x,
-                            y: action.y,
-                            size: action.size || 12,
-                            color: rgb(0, 0, 0),
-                        });
-                    }
-                    break;
+        if (uploadError) throw uploadError;
+        const newKey = newPath;
 
-                case 'rotate_page':
-                    const targetPage = pdfDoc.getPages()[action.pageIndex];
-                    if (targetPage) {
-                        const currentRotation = targetPage.getRotation().angle;
-                        targetPage.setRotation({ angle: (currentRotation + (action.degrees || 90)) % 360 });
-                    }
-                    break;
+        // 5. Update Draft Record
+        const { getPageCount } = await import('../services/conversion.service.js');
+        const pageCount = await getPageCount(editedPdfBuffer);
 
-                case 'replace_text':
-                    console.log(`[PDFController] Running Global Replace: "${action.from}" -> "${action.to}"`);
-                    // Note: findTextCoordinates requires pdf-parse logic usually on the raw buffer
-                    // We pass the raw buffer 'pdfBytes' again
-                    const matches = await findTextCoordinates(pdfBytes, action.from);
-
-                    for (const match of matches) {
-                        const page = pdfDoc.getPages()[match.pageIndex];
-                        if (page) {
-                            // 1. White-out the original text
-                            page.drawRectangle({
-                                x: match.x,
-                                y: match.y,
-                                width: match.width,
-                                height: match.height || 12,
-                                color: rgb(1, 1, 1), // White
-                            });
-
-                            // 2. Overlay new text
-                            page.drawText(action.to, {
-                                x: match.x,
-                                y: match.y,
-                                size: 10, // heuristic font size since we don't know original
-                                color: rgb(0, 0, 0),
-                            });
-                        }
-                    }
-                    break;
-            }
-        }
-
-        // 5. Save and Upload result
-        const editedPdfBytes = await pdfDoc.save();
-
-        // Save to temporary local file to upload (uploadToStorage expects a file path)
-        // OR update uploadToStorage to accept Buffer?
-        // Current uploadToStorage takes a filePath.
-        const tempName = `edited_${Date.now()}_${draftId}.pdf`;
-        const tempPath = path.join(process.cwd(), 'uploads', tempName); // Ensure uploads dir exists
-
-        if (!fs.existsSync(path.dirname(tempPath))) {
-            fs.mkdirSync(path.dirname(tempPath), { recursive: true });
-        }
-
-        fs.writeFileSync(tempPath, editedPdfBytes);
-
-        // Upload to Supabase
-        const newKey = await uploadToStorage(tempPath);
-
-        // Cleanup temp file
-        fs.unlinkSync(tempPath);
-
-        // 6. Update Draft Record
         await pool.query(
             "UPDATE print_job_drafts SET converted_pdf_url = $1, page_count = $2 WHERE id = $3",
-            [newKey, pdfDoc.getPageCount(), draftId]
+            [newKey, pageCount, draftId]
         );
 
         res.status(200).json({
             success: true,
-            pdfUrl: newKey, // Frontend might need to sign this or just know it's done
+            pdfUrl: newKey,
             message: "Instructions applied successfully"
         });
-
     } catch (error) {
         console.error("PDF Processing Error:", error);
         res.status(500).json({ error: "Failed to process PDF instructions" });

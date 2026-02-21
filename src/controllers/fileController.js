@@ -1,46 +1,84 @@
 import pool from "../config/db.js";
-import { convertToPDF, getPageCount } from "../services/conversion.service.js";
-import { uploadToStorage } from "../services/storage.service.js";
+import { createSignedUploadUrl } from "../services/storage.service.js";
+import { getPageCount } from "../services/conversion.service.js";
 
+/**
+ * Step 1: Generate Signed Upload URL
+ */
+export const generateUploadUrl = async (req, res) => {
+    try {
+        const { fileName, fileType } = req.body;
+        if (!fileName) return res.status(400).json({ error: "fileName is required" });
+
+        const userId = req.user.id;
+        const timestamp = Date.now();
+        const filePath = `user-uploads/${userId}/${timestamp}-${fileName}`;
+
+        const uploadUrl = await createSignedUploadUrl(filePath);
+
+        res.json({
+            success: true,
+            uploadUrl,
+            filePath,
+            bucketName: "uploads"
+        });
+    } catch (error) {
+        console.error("❌ [FileController] Signed URL Error:", error.message);
+        res.status(500).json({ error: "Failed to generate upload URL" });
+    }
+};
+
+/**
+ * Step 2: Finalize Upload (Store Metadata)
+ * Frontend calls this after direct Supabase upload
+ */
 export const uploadFile = async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: "No file uploaded" });
+    const { filePath, fileName, pageCount: providedPageCount } = req.body;
+
+    if (!filePath) {
+        return res.status(400).json({ error: "filePath is required" });
     }
 
-    const { path: tempPath, originalname } = req.file;
-    const ext = originalname.split(".").pop().toLowerCase();
+    // Validate ownership
+    if (!filePath.startsWith(`user-uploads/${req.user.id}/`)) {
+        return res.status(403).json({ error: "Invalid file path" });
+    }
 
     try {
-        let pdfPath;
-        if (ext === "pdf") {
-            pdfPath = tempPath;
-        } else {
-            console.log(`[FileController] Converting ${originalname} to PDF...`);
-            pdfPath = await convertToPDF(tempPath);
+        const ext = fileName?.split(".").pop().toLowerCase() || "pdf";
+        const pageCount = Number(providedPageCount);
+
+        if (!Number.isInteger(pageCount) || pageCount <= 0) {
+            return res.status(400).json({ error: "Invalid page count" });
         }
 
-        console.log(`[FileController] Uploading to Storage...`);
-        const pdfUrl = await uploadToStorage(pdfPath);
-        const pageCount = await getPageCount(pdfPath);
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour expiry
 
         // Save to Database
         const query = `
-            INSERT INTO files (user_id, filename, file_url, file_type, page_count, status)
-            VALUES ($1, $2, $3, $4, $5, 'ready')
+            INSERT INTO files (user_id, filename, file_url, file_type, page_count, status, expires_at)
+            VALUES ($1, $2, $3, $4, $5, 'UPLOADED', $6)
             RETURNING *;
         `;
-        const values = [req.user.id, originalname, pdfUrl, ext, pageCount];
+        const values = [
+            req.user.id,
+            fileName || "unnamed",
+            filePath,
+            ext,
+            pageCount,
+            expiresAt
+        ];
         const result = await pool.query(query, values);
 
         res.status(200).json({
-            status: "ready",
+            status: "UPLOADED",
             file: result.rows[0],
-            pdfUrl,
+            filePath,
             pageCount
         });
     } catch (error) {
-        console.error("File processing error:", error);
-        res.status(500).json({ error: "File preparation failed" });
+        console.error("❌ [FileController] Metadata Sync Error:", error.message);
+        res.status(500).json({ error: "Failed to sync file metadata" });
     }
 };
 

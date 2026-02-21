@@ -50,12 +50,19 @@ const convertOfficeToPDF = async (inputPath) => {
     // LibreOffice handles filenames by stripping extension and appending .pdf
     const expectedPdfPath = path.join(outputDir, `${basename}.pdf`);
 
+    // Handle PATH propagation issues on Windows by using the explicit default installation path
+    // if we are running on Windows, fallback to 'soffice' for linux/mac
+    const isWindows = process.platform === "win32";
+    const sofficeBin = isWindows
+        ? `"C:\\Program Files\\LibreOffice\\program\\soffice.exe"`
+        : `soffice`;
+
     // Command to convert
     // --headless: no UI
     // --convert-to pdf: target format
     // --outdir: output location
     // We add --nologo --nofirststartwizard for slightly faster/cleaner init
-    const command = `soffice --headless --convert-to pdf --outdir "${outputDir}" "${inputPath}"`;
+    const command = `${sofficeBin} --headless --convert-to pdf --outdir "${outputDir}" "${inputPath}"`;
 
     try {
         console.log(`[ConversionService] Executing: ${command}`);
@@ -146,10 +153,11 @@ export const imagesToPDF = async (imagePaths) => {
 
 /**
  * Validate PDF and Return Page Count
+ * Supports both filePath and Buffer
  */
-export const validatePDF = async (pdfPath) => {
+export const validatePDF = async (pdfPathOrBuffer) => {
     try {
-        const data = await fs.readFile(pdfPath);
+        const data = Buffer.isBuffer(pdfPathOrBuffer) ? pdfPathOrBuffer : await fs.readFile(pdfPathOrBuffer);
         const pdfDoc = await PDFDocument.load(data, { ignoreEncryption: true });
         return pdfDoc.getPageCount() > 0;
     } catch (error) {
@@ -160,10 +168,11 @@ export const validatePDF = async (pdfPath) => {
 
 /**
  * Get PDF Page Count
+ * Supports both filePath and Buffer
  */
-export const getPageCount = async (pdfPath) => {
+export const getPageCount = async (pdfPathOrBuffer) => {
     try {
-        const data = await fs.readFile(pdfPath);
+        const data = Buffer.isBuffer(pdfPathOrBuffer) ? pdfPathOrBuffer : await fs.readFile(pdfPathOrBuffer);
         const pdfDoc = await PDFDocument.load(data, { ignoreEncryption: true });
         return pdfDoc.getPageCount();
     } catch (error) {

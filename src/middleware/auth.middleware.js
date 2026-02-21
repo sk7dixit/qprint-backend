@@ -1,5 +1,5 @@
 import { verifyFirebaseToken } from "../config/firebase-admin.js";
-import pool from "../config/db.js";
+import { db } from "../config/db.js";
 
 /**
  * Authenticate Middleware (Step 3)
@@ -34,7 +34,7 @@ export const authenticate = async (req, res, next) => {
             // For draft upload, we use req.user.id in the INSERT. 
             // So we must ensure "test-user-id" is valid or we handle it.
             // Actually, the best way is to look up the test user by email "test@example.com"
-            const testUserRes = await pool.query("SELECT * FROM users WHERE email = 'test@example.com'");
+            const testUserRes = await db.query("SELECT * FROM users WHERE email = 'test@example.com'");
             if (testUserRes.rows.length > 0) {
                 req.user = testUserRes.rows[0];
                 console.log("✅ [AUTH] Bypassed to test user:", req.user.email);
@@ -43,7 +43,7 @@ export const authenticate = async (req, res, next) => {
             } else {
                 console.log("⚠️ [AUTH] Test user not found in DB. Creating one...");
                 // Create dummy test user
-                const newTestUser = await pool.query(
+                const newTestUser = await db.query(
                     "INSERT INTO users (uid, email, name, role, is_profile_complete) VALUES ('test-uid', 'test@example.com', 'Test User', 'admin', true) RETURNING *"
                 );
                 req.user = newTestUser.rows[0];
@@ -58,7 +58,7 @@ export const authenticate = async (req, res, next) => {
         console.log("✅ [AUTH] Token decoded. UID:", decodedToken.uid, "Email:", decodedToken.email);
 
         // Step E: Sync with database (Verify + Upsert)
-        const result = await pool.query(
+        const result = await db.query(
             "SELECT * FROM users WHERE uid = $1",
             [decodedToken.uid]
         );
@@ -68,7 +68,7 @@ export const authenticate = async (req, res, next) => {
         let user;
         if (result.rows.length === 0) {
             // Fallback: Check by email (Claim Account logic)
-            const emailCheck = await pool.query(
+            const emailCheck = await db.query(
                 "SELECT * FROM users WHERE email = $1",
                 [decodedToken.email]
             );
@@ -76,7 +76,7 @@ export const authenticate = async (req, res, next) => {
             if (emailCheck.rows.length > 0) {
                 console.log("ℹ️ [AUTH] User found by email. Updating UID...");
                 // Update the existing user's UID to match the new token
-                const updateResult = await pool.query(
+                const updateResult = await db.query(
                     "UPDATE users SET uid = $1 WHERE email = $2 RETURNING *",
                     [decodedToken.uid, decodedToken.email]
                 );
@@ -89,7 +89,7 @@ export const authenticate = async (req, res, next) => {
                 const role = decodedToken.email === "qprint92@gmail.com" ? "admin" : "student";
                 const profileComplete = role === "admin"; // Admins don't need profile completion
 
-                const insertResult = await pool.query(
+                const insertResult = await db.query(
                     `INSERT INTO users (uid, email, name, role, is_profile_complete) 
                      VALUES ($1, $2, $3, $4, $5) 
                      RETURNING *`,
@@ -104,7 +104,7 @@ export const authenticate = async (req, res, next) => {
             // Auto-promote Admin if existing user has wrong role
             if (user.email === "qprint92@gmail.com" && user.role !== "admin") {
                 console.log("⚠️ [AUTH] Promoting existing user to Admin...");
-                const updateResult = await pool.query(
+                const updateResult = await db.query(
                     "UPDATE users SET role = 'admin', is_profile_complete = true WHERE id = $1 RETURNING *",
                     [user.id]
                 );

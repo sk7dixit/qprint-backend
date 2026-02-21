@@ -1,6 +1,8 @@
 import pool from "../config/db.js";
 import { emitToShop, emitToUser } from "../services/socketService.js";
-import { uploadToStorage, downloadFile } from "../services/storage.service.js"; // Import storage helpers
+import { downloadFile } from "../services/storage.service.js";
+import { printQueue } from "../queue/printQueue.js";
+import { isValidTransition, validPaymentTransitions, validPrintTransitions } from "../utils/stateMachine.js";
 export const createPrintJob = async (req, res) => {
     const { shop_id, draft_id, print_options } = req.body;
 
@@ -50,10 +52,10 @@ export const createPrintJob = async (req, res) => {
         const queueResult = await pool.query(queueQuery, [shop_id]);
         const queueNumber = Number(queueResult.rows[0].count) + 1;
 
-        // 4. Create Print Job (Pending Payment)
+        // 4. Create Print Job (PENDING_PAYMENT)
         const insertQuery = `
             INSERT INTO print_jobs (user_id, shop_id, draft_id, print_options, amount, payment_status, queue_number, status, file_id)
-            VALUES ($1, $2, $3, $4, $5, 'pending', $6, 'created', NULL)
+            VALUES ($1, $2, $3, $4, $5, 'PENDING_PAYMENT', $6, 'PENDING_PAYMENT', NULL)
             RETURNING *;
         `;
 
@@ -91,60 +93,48 @@ export const verifyPayment = async (req, res) => {
 
         const printJob = printJobResult.rows[0];
 
-        if (printJob.payment_status === 'paid') {
+        if (printJob.payment_status === 'PAID') {
             return res.status(200).json({ message: "Already paid", printJob });
+        }
+
+        // State Machine Check
+        if (!isValidTransition(printJob.payment_status, "PAID", validPaymentTransitions)) {
+            return res.status(400).json({ error: `Invalid payment transition from ${printJob.payment_status} to PAID` });
         }
 
         // 2. Get Draft
         const draftResult = await pool.query("SELECT * FROM print_job_drafts WHERE id = $1", [printJob.draft_id]);
         const draft = draftResult.rows[0];
 
-        // 3. LOCK & COPY (The most important part)
-        let finalPdfPath;
-        try {
-            const pdfBuffer = await downloadFile(draft.converted_pdf_url);
-            const tempName = `final_${printJobId}.pdf`;
-            const tempPath = path.join(process.cwd(), 'uploads', tempName);
-            if (!fs.existsSync(path.dirname(tempPath))) {
-                fs.mkdirSync(path.dirname(tempPath), { recursive: true });
-            }
-            fs.writeFileSync(tempPath, pdfBuffer);
-            finalPdfPath = await uploadToStorage(tempPath);
-            fs.unlinkSync(tempPath);
-        } catch (storageError) {
-            console.error("Failed to finalize PDF:", storageError);
-            return res.status(500).json({ error: "Payment verification failed during file finalization." });
-        }
-
-        // 4. Update Print Job (Paid, Queued, Final PDF)
+        // 3. Queue Finalization Job (Background Processing)
+        // Set status to 'PROCESSING_PAYMENT' or strictly 'PAID' (letting worker set to QUEUED)
+        // We'll set to 'PAID' here so UI knows payment succeeded. Worker will move to 'QUEUED' when file is ready.
         const updateQuery = `
             UPDATE print_jobs 
-            SET payment_status = 'paid', status = 'queued', final_pdf_url = $1, file_id = $2
-            WHERE id = $3
+            SET payment_status = 'PAID'
+            WHERE id = $1
             RETURNING *;
         `;
-
-        // Insert into files table to get a valid file_id
-        const fileInsert = await pool.query(
-            "INSERT INTO files (user_id, filename, file_url, page_count, file_type) VALUES ($1, $2, $3, $4, 'pdf') RETURNING id",
-            [req.user.id, `PrintJob_${printJobId}.pdf`, finalPdfPath, draft.page_count]
-        );
-        const newFileId = fileInsert.rows[0].id;
-
-        const updatedJobResult = await pool.query(updateQuery, [finalPdfPath, newFileId, printJobId]);
+        const updatedJobResult = await pool.query(updateQuery, [printJobId]);
         const updatedJob = updatedJobResult.rows[0];
 
-        // 5. FREEZE Draft (Immutable)
-        await pool.query("UPDATE print_job_drafts SET status = 'printed' WHERE id = $1", [printJob.draft_id]);
+        // Add to Queue
+        await printQueue.add("finalize-print-job", {
+            printJobId,
+            userId: req.user.id,
+            draftId: printJob.draft_id
+        }, {
+            attempts: 3,
+            backoff: { type: "exponential", delay: 2000 }
+        });
 
-        // 6. Notify Shop
-        emitToShop(printJob.shop_id, "printJobCreated", updatedJob);
+        // 4. Notify User (Optimistic)
         emitToUser(req.user.id, "printJobPaid", updatedJob);
 
         res.status(200).json({
             success: true,
             printJob: updatedJob,
-            message: "Payment successful. Job sent to shop."
+            message: "Payment successful. Finalizing job..."
         });
 
     } catch (error) {
@@ -210,12 +200,15 @@ export const updatePrintJobStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    const validStatuses = ['queued', 'accepted', 'printing', 'ready', 'completed', 'cancelled'];
-    if (!validStatuses.includes(status)) {
-        return res.status(400).json({ error: "Invalid status" });
-    }
-
     try {
+        const currentJobResult = await pool.query("SELECT status FROM print_jobs WHERE id = $1", [id]);
+        if (currentJobResult.rows.length === 0) return res.status(404).json({ error: "Print job not found" });
+
+        const currentStatus = currentJobResult.rows[0].status;
+
+        if (!isValidTransition(currentStatus, status, validPrintTransitions)) {
+            return res.status(400).json({ error: `Invalid status transition from ${currentStatus} to ${status}` });
+        }
         const query = `UPDATE print_jobs SET status = $1 WHERE id = $2 RETURNING *;`;
         const result = await pool.query(query, [status, id]);
 

@@ -11,9 +11,31 @@ import printDraftRoutes from "./routes/printDraftRoutes.js";
 
 const app = express();
 
+
+import rateLimit from "express-rate-limit";
+
+const limiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 100, // Limit each IP to 100 requests per windowMs
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
 // Middlewares
+app.use(limiter);
 app.use(cors());
 app.use(express.json());
+
+// Request Timeout Middleware (15s)
+app.use((req, res, next) => {
+    res.setTimeout(15000, () => {
+        console.error(`🕒 [Timeout] ${req.method} ${req.url} timed out`);
+        if (!res.headersSent) {
+            res.status(408).json({ error: "Request timeout" });
+        }
+    });
+    next();
+});
 
 // Global request logger
 app.use((req, res, next) => {
@@ -31,8 +53,9 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/shops", shopRoutes);
 app.use("/api/print-drafts", printDraftRoutes);
 
-app.get("/health", (req, res) => {
-    res.status(200).json({ status: "ok" });
-});
+import { getHealth } from "./controllers/healthController.js";
+
+app.get("/api/health", getHealth);
+app.get("/health", getHealth); // Keep alias if needed
 
 export default app;

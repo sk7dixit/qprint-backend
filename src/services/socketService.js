@@ -2,15 +2,29 @@
  * Socket Service - Handles real-time communication
  */
 import { Server } from "socket.io";
+import { createAdapter } from "@socket.io/redis-adapter";
+import { createClient } from "redis";
+import { env } from "../config/env.js";
 
 let io;
 
 export const initSocket = (server) => {
+    // Redis Clients for Adapter
+    const pubClient = createClient({ url: env.REDIS_URL });
+    const subClient = pubClient.duplicate();
+
+    Promise.all([pubClient.connect(), subClient.connect()]).then(() => {
+        console.log("✅ Redis Adapter connected for Socket.io");
+    }).catch(err => {
+        console.error("❌ Redis Adapter connection failed:", err);
+    });
+
     io = new Server(server, {
         cors: {
             origin: "*", // Adjust in production
             methods: ["GET", "POST"]
-        }
+        },
+        adapter: createAdapter(pubClient, subClient)
     });
 
     io.on("connection", (socket) => {

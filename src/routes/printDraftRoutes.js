@@ -1,14 +1,34 @@
 import express from "express";
-import { uploadDraft, getDraftStatus, deleteDraft, updateDraftStatus, processDraftEdits, processAIRequest } from "../controllers/printDraftController.js";
+import {
+    uploadDraft,
+    getDraftStatus,
+    deleteDraft,
+    updateDraftStatus,
+    processDraftEdits,
+    spellFix,
+    formatClean,
+    getDraft
+} from "../controllers/printDraftController.js";
 import { authenticate } from "../middleware/auth.middleware.js";
-import { upload } from "../middleware/upload.middleware.js";
 
 const router = express.Router();
 
 router.use(authenticate);
+// router.use((req, res, next) => {
+//     req.user = { id: 'test-user-id' };
+//     next();
+// });
 
-// Unified upload endpoint
-router.post("/upload", upload.single("file"), uploadDraft);
+import multer from "multer";
+
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Unified upload endpoints
+// router.post("/generate-upload-url", generateDraftUploadUrl); // Deprecated
+router.post("/upload", upload.single('file'), uploadDraft);
+
+// Get Draft Details
+router.get("/:draftId", getDraft);
 
 // Poll draft status
 router.get("/:draftId/status", getDraftStatus);
@@ -23,6 +43,7 @@ router.patch("/:draftId/status", updateDraftStatus);
 router.post("/:draftId/process", processDraftEdits);
 
 // AI Text Processing
-router.post("/:draftId/ai", processAIRequest);
+router.post("/:draftId/spell-fix", spellFix);
+router.post("/:draftId/format-clean", formatClean);
 
 export default router;

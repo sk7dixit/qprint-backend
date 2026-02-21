@@ -1,75 +1,52 @@
+import { supabase } from "../config/supabase.js";
 
-import { createClient } from "@supabase/supabase-js";
-import path from "path";
-import fs from "fs";
-
-// Initialize Supabase Client
-// CRITICAL: Use SERVICE ROLE KEY for backend operations to bypass RLS if needed,
-// or use standard key if we want to respect policies (but backend usually needs full access).
-// For file uploads associated with a user, we might want to use the user's token, but here we are in a service.
-// Let's use the Service Role Key for reliability in background jobs.
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!supabaseUrl || !supabaseServiceKey) {
-    console.error("StorageService: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
-}
-
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-const BUCKET_NAME = "uploads"; // Ensure this bucket exists
+const BUCKET_NAME = "uploads";
 
 /**
- * Storage Service - Uploads files to Supabase Storage
- * Returns the public URL or signed URL.
+ * Generate a Hardened Signed Upload URL
+ * Validates path structure and enforces ownership via path naming conventions.
  */
-export const uploadToStorage = async (filePath) => {
+export const createSignedUploadUrl = async (filePath) => {
     try {
-        const fileName = path.basename(filePath);
-        const fileContent = fs.readFileSync(filePath);
-
-        // Upload to Supabase
-        // We use a simple path strategy: "converted/timestamp-filename" to avoid collisions
-        const storagePath = `converted/${Date.now()}-${fileName}`;
+        if (!filePath.startsWith("user-uploads/")) {
+            throw new Error("Invalid storage path");
+        }
 
         const { data, error } = await supabase.storage
             .from(BUCKET_NAME)
-            .upload(storagePath, fileContent, {
-                contentType: 'application/pdf', // Assuming we are mostly uploading converted PDFs here
-                upsert: false
+            .createSignedUploadUrl(filePath, {
+                upsert: false // Prevent accidental overwrites
             });
 
-        if (error) {
-            throw error;
-        }
-
-        // Get Public URL (if bucket is public)
-        const { data: { publicUrl } } = supabase.storage
-            .from(BUCKET_NAME)
-            .getPublicUrl(storagePath);
-
-        // OR Signed URL (if bucket is private - recommended for user content)
-        // For now, let's assume we want a signed URL valid for a long time or just use the path 
-        // and let the frontend generate signed URLs on demand.
-        // However, the controller expects a URL to store in the DB.
-        // If we store the path, the frontend needs to know it's a path.
-        // Let's return the PATH relative to the bucket, so the frontend can sign it.
-        // BUT wait, existing implementation expects a URL.
-
-        // Recommendation: Store the FULL PATH (bucket + path) or just the path and have a robust getter.
-        // Let's return the 'path' property from data, which is usually `converted/timestamp-filename`.
-        return data.path;
+        if (error) throw error;
+        return data.signedUrl;
 
     } catch (error) {
-        console.error("Storage Service Error:", error);
+        console.error("Storage Signed Upload URL Error:", error.message);
         throw error;
     }
 };
 
+/**
+ * Generate a Read-Only Signed URL for frontend access
+ */
+export const getSignedUrl = async (filePath) => {
+    try {
+        const { data, error } = await supabase.storage
+            .from(BUCKET_NAME)
+            .createSignedUrl(filePath, 60 * 60); // Valid for 1 hour
+
+        if (error) throw error;
+        return data.signedUrl;
+    } catch (error) {
+        console.error("Storage Read Signed URL Error:", error.message);
+        throw error;
+    }
+};
 
 /**
- * Download file from Supabase Storage
- * Returns a Buffer
+ * Download file from Supabase Storage (For Worker use only)
+ * Returns a Buffer representing the file content.
  */
 export const downloadFile = async (storagePath) => {
     try {
@@ -79,21 +56,29 @@ export const downloadFile = async (storagePath) => {
 
         if (error) throw error;
 
-        return Buffer.from(await data.arrayBuffer());
+        // Convert the blob/stream to a Buffer
+        const arrayBuffer = await data.arrayBuffer();
+        return Buffer.from(arrayBuffer);
     } catch (error) {
-        console.error("Storage Download Error:", error);
+        console.error("Storage Download Error:", error.message);
         throw error;
     }
 };
 
 /**
- * Generate Signed URL for a given path
+ * Delete a file from Storage
+ * Essential for cleanup workers and storage tier management (1GB limits).
  */
-export const getSignedUrl = async (path) => {
-    const { data, error } = await supabase.storage
-        .from(BUCKET_NAME)
-        .createSignedUrl(path, 60 * 60); // 1 hour
+export const deleteFileFromStorage = async (storagePath) => {
+    try {
+        const { error } = await supabase.storage
+            .from(BUCKET_NAME)
+            .remove([storagePath]);
 
-    if (error) throw error;
-    return data.signedUrl;
-}
+        if (error) throw error;
+        return true;
+    } catch (error) {
+        console.error("Storage Delete Error:", error.message);
+        throw error;
+    }
+};

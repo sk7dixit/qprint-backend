@@ -1,9 +1,10 @@
-import pool from "../config/db.js";
+import { db } from "../config/db.js";
+import admin from "firebase-admin";
 
 export const getProfile = async (req, res) => {
     const { uid } = req.params;
     try {
-        let result = await pool.query("SELECT * FROM users WHERE uid = $1", [uid]);
+        let result = await db.query("SELECT * FROM users WHERE uid = $1", [uid]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({ error: "User not found" });
@@ -54,21 +55,21 @@ export const completeProfile = async (req, res) => {
             RETURNING *;
         `;
 
-        const result = await pool.query(query, [enrollmentId, mobile, newRole, req.user.id]);
+        const result = await db.query(query, [enrollmentId, mobile, newRole, req.user.id]);
         res.status(200).json({ success: true, user: result.rows[0] });
     } catch (error) {
         console.error("Error completing profile:", error);
         res.status(500).json({ error: "Internal server error" });
     }
 };
-import admin from "firebase-admin";
+// Firebase Cloud Messaging or other admin tasks if needed (singleton initialized in firebase-admin.js)
 
 export const clearResetFlag = async (req, res) => {
     const { uid } = req.user;
 
     try {
         // 1. Update DB (Persistent for Dev Mode)
-        await pool.query("UPDATE users SET force_password_reset = false WHERE uid = $1", [uid]);
+        await db.query("UPDATE users SET force_password_reset = false WHERE uid = $1", [uid]);
 
         // 2. Clear Firebase Claims (Production)
         // Fetch existing claims to preserve role and shopId
@@ -95,7 +96,7 @@ export const getMyShop = async (req, res) => {
     }
 
     try {
-        const result = await pool.query("SELECT * FROM shops WHERE id = $1", [shop_id]);
+        const result = await db.query("SELECT * FROM shops WHERE id = $1", [shop_id]);
         if (result.rows.length === 0) {
             return res.status(404).json({ error: "Shop record not found." });
         }

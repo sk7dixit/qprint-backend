@@ -1,62 +1,88 @@
-import { PDFDocument, degrees } from 'pdf-lib';
-import fs from 'fs/promises';
-import path from 'path';
-import { uploadToStorage, downloadFile } from './storage.service.js';
-import { getPageCount } from './conversion.service.js';
+import { PDFDocument, degrees, rgb } from 'pdf-lib';
+import { findTextCoordinates } from '../utils/pdfUtils.js';
 
 /**
- * Apply PDF Actions (Rotate, Delete, etc.)
- * @param {string} currentPdfKey - Storage key/path
- * @param {Array} actions - JSON actions from Editor
- * @returns {Object} { key, pageCount }
+ * Apply a series of actions to a PDF Buffer.
+ * @param {Buffer} pdfBuffer - The source PDF buffer.
+ * @param {Array} actions - List of actions to perform.
+ * @returns {Promise<Buffer>} - The modified PDF buffer.
  */
-export const applyPDFActions = async (currentPdfKey, actions) => {
-    console.log(`[PDFService] Applying ${actions.length} actions to ${currentPdfKey}`);
+export async function applyPDFActions(pdfBuffer, actions) {
+    if (!actions || actions.length === 0) return pdfBuffer;
 
-    // 1. Download current file
-    const pdfBuffer = await downloadFile(currentPdfKey);
-
-    // 2. Load PDF
     const pdfDoc = await PDFDocument.load(pdfBuffer);
+    const pages = pdfDoc.getPages();
 
-    // 3. Process Actions
-    // Important: Delete actions should be processed in reverse order or tracked carefully
-    // because deleting a page changes following indices.
+    // Track which pages to keep (0-indexed)
+    let pageIndicesToKeep = pages.map((_, i) => i);
+    let hasStructuralChanges = false;
 
-    // Sort actions: process page modifications first, then deletions in reverse order?
-    // Actually, it's safer to handle them sequentially if the indices are relative to the *initial* state.
-    // The Editor usually sends indices based on the current UI state.
-
-    // Let's implement basic rotation and deletion.
     for (const action of actions) {
-        if (action.type === 'rotate_page') {
-            const page = pdfDoc.getPage(action.pageIndex);
-            page.setRotation(degrees(page.getRotation().angle + (action.degrees || 90)));
-            console.log(`[PDFService] Rotated page ${action.pageIndex}`);
+        switch (action.type) {
+            case 'rotate_page':
+                const rotIndex = action.pageIndex;
+                if (rotIndex >= 0 && rotIndex < pages.length) {
+                    const page = pages[rotIndex];
+                    const currentRotation = page.getRotation().angle;
+                    page.setRotation(degrees(currentRotation + (action.degrees || 90)));
+                }
+                break;
+
+            case 'delete_page':
+                hasStructuralChanges = true;
+                pageIndicesToKeep = pageIndicesToKeep.filter(idx => idx !== action.pageIndex);
+                break;
+
+            case 'reorder_pages':
+                hasStructuralChanges = true;
+                if (action.newOrder && Array.isArray(action.newOrder)) {
+                    pageIndicesToKeep = action.newOrder;
+                }
+                break;
+
+            case 'add_text':
+                const textPage = pdfDoc.getPages()[action.pageIndex];
+                if (textPage) {
+                    textPage.drawText(action.text, {
+                        x: action.x,
+                        y: action.y,
+                        size: action.size || 12,
+                        color: rgb(0, 0, 0),
+                    });
+                }
+                break;
+
+            case 'replace_text':
+                // Note: findTextCoordinates uses pdf-parse logic on the buffer
+                const matches = await findTextCoordinates(pdfBuffer, action.from);
+                for (const match of matches) {
+                    const page = pdfDoc.getPages()[match.pageIndex];
+                    if (page) {
+                        page.drawRectangle({
+                            x: match.x,
+                            y: match.y,
+                            width: match.width,
+                            height: match.height || 12,
+                            color: rgb(1, 1, 1),
+                        });
+                        page.drawText(action.to, {
+                            x: match.x,
+                            y: match.y,
+                            size: 10,
+                            color: rgb(0, 0, 0),
+                        });
+                    }
+                }
+                break;
         }
     }
 
-    // Handle deletions separately in reverse order
-    const deleteActions = actions.filter(a => a.type === 'delete_page')
-        .sort((a, b) => b.pageIndex - a.pageIndex);
-
-    for (const action of deleteActions) {
-        pdfDoc.removePage(action.pageIndex);
-        console.log(`[PDFService] Deleted page ${action.pageIndex}`);
+    if (hasStructuralChanges) {
+        const newPdfDoc = await PDFDocument.create();
+        const copiedPages = await newPdfDoc.copyPages(pdfDoc, pageIndicesToKeep);
+        copiedPages.forEach(page => newPdfDoc.addPage(page));
+        return Buffer.from(await newPdfDoc.save());
+    } else {
+        return Buffer.from(await pdfDoc.save());
     }
-
-    // 4. Save and Upload
-    const modifiedPdfBytes = await pdfDoc.save();
-    const tempFileName = `edited-${Date.now()}-${path.basename(currentPdfKey)}`;
-    const tempPath = path.join('uploads', tempFileName);
-
-    await fs.writeFile(tempPath, modifiedPdfBytes);
-
-    const newKey = await uploadToStorage(tempPath);
-    const pageCount = await getPageCount(tempPath);
-
-    // Cleanup local temp file
-    await fs.unlink(tempPath).catch(console.error);
-
-    return { key: newKey, pageCount };
-};
+}
